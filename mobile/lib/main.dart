@@ -494,47 +494,38 @@ class _ControllerScreenState extends State<ControllerScreen> {
         ),
         const SizedBox(height: 16),
         Row(
-          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            _Disc(
-              diameter: 196,
-              axis: Offset(_axisX / 32767, _axisY / 32767),
-              onChanged: _setDisc,
-              onReleased: _resetDisc,
+            _RoundAction(
+              label: 'TOP',
+              color: const Color(0xFFD8B467),
+              pressed: _isPressed(6),
+              onDown: (id) => _controlDown(id, 6),
+              onUp: _controlUp,
             ),
-            const SizedBox(width: 12),
-            Column(
-              children: [
-                _RoundAction(
-                  label: 'TOP',
-                  color: const Color(0xFFD8B467),
-                  pressed: _isPressed(6),
-                  onDown: (id) => _controlDown(id, 6),
-                  onUp: _controlUp,
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    _RoundAction(
-                      label: 'LEFT',
-                      color: const Color(0xFFC97850),
-                      pressed: _isPressed(4),
-                      onDown: (id) => _controlDown(id, 4),
-                      onUp: _controlUp,
-                    ),
-                    const SizedBox(width: 9),
-                    _RoundAction(
-                      label: 'RIGHT',
-                      color: const Color(0xFFB95542),
-                      pressed: _isPressed(5),
-                      onDown: (id) => _controlDown(id, 5),
-                      onUp: _controlUp,
-                    ),
-                  ],
-                ),
-              ],
+            const Spacer(),
+            _RoundAction(
+              label: 'LEFT',
+              color: const Color(0xFFC97850),
+              pressed: _isPressed(4),
+              onDown: (id) => _controlDown(id, 4),
+              onUp: _controlUp,
+            ),
+            const SizedBox(width: 9),
+            _RoundAction(
+              label: 'RIGHT',
+              color: const Color(0xFFB95542),
+              pressed: _isPressed(5),
+              onDown: (id) => _controlDown(id, 5),
+              onUp: _controlUp,
             ),
           ],
+        ),
+        const SizedBox(height: 8),
+        _Disc(
+          diameter: 280,
+          axis: Offset(_axisX / 32767, _axisY / 32767),
+          onChanged: _setDisc,
+          onReleased: _resetDisc,
         ),
       ],
     ),

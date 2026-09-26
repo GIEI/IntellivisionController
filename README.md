@@ -4,15 +4,17 @@ FreeIntv Controller connects the Android phone app to the FreeIntv libretro core
 
 ## Downloads
 
-- [Windows RetroArch core DLL](FreeIntv-master/build/windows-msvc/freeintv_controller_libretro.dll)
-- [Android controller app APK](mobile/build/app/outputs/flutter-apk/app-debug.apk)
-- [Matching RetroArch core information file](FreeIntv-master/build/windows-msvc/freeintv_controller_libretro.info)
+- [Windows RetroArch core DLL](https://github.com/GIEI/IntellivisionController/releases/latest/download/freeintv_controller_libretro.dll)
+- [Android controller app APK](https://github.com/GIEI/IntellivisionController/releases/latest/download/Intellivision.Controller.apk)
+- [RetroArch core information file](https://github.com/GIEI/IntellivisionController/releases/latest/download/freeintv_controller_libretro.info)
+
+All three download links point to assets attached to the latest GitHub Release.
 
 ## Install the core in RetroArch on Windows
 
 1. Close RetroArch.
 2. Copy `freeintv_controller_libretro.dll` into RetroArch's `cores` directory. For example: `E:\RetroArch-Win64\cores\`.
-3. Copy `freeintv_controller_libretro.info` into RetroArch's `info` directory. Its name must match the DLL name, apart from the extension.
+3. Copy `freeintv_controller_libretro.info` into RetroArch's `info` directory. Its name matches the DLL.
 4. Make sure the Intellivision BIOS files `exec.bin` and `grom.bin` are in RetroArch's `system` directory.
 5. Start RetroArch and load an Intellivision ROM with **FreeIntv Controller**. If you replaced an earlier DLL, fully restart RetroArch before loading the game.
 
