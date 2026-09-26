@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -49,6 +49,7 @@ class _ControllerScreenState extends State<ControllerScreen> {
   static const _keyBitStart = 7;
   static const _startBit = 19;
   static const _selectBit = 20;
+  static const _overlayMaxBytes = 8 * 1024 * 1024;
 
   final Map<int, int> _keyTouches = {};
   final Map<int, int> _controlTouches = {};
@@ -61,6 +62,11 @@ class _ControllerScreenState extends State<ControllerScreen> {
   int _axisX = 0;
   int _axisY = 0;
   int? _selectedKey;
+  final List<int> _incomingBytes = [];
+  Uint8List? _overlayImage;
+  Size _overlayImageSize = const Size(335, 540);
+  bool _overlayVisible = false;
+  bool _overlayResponseReceived = false;
   final TextEditingController _hostController = TextEditingController();
   final TextEditingController _codeController = TextEditingController(
     text: _pairingCodeDefault,
@@ -114,13 +120,17 @@ class _ControllerScreenState extends State<ControllerScreen> {
       }
       _socket?.destroy();
       _socket = socket;
+      _incomingBytes.clear();
+      _overlayImage = null;
+      _overlayVisible = false;
+      _overlayResponseReceived = false;
       socket.add(
         Uint8List.fromList('${_codeController.text.trim()}\n'.codeUnits),
       );
       setState(() => _connectionMessage = 'Collegato al core FreeIntv');
       socket.done.then((_) => _connectionEnded(socket));
       socket.listen(
-        (_) {},
+        (data) => _receiveOverlay(socket, data),
         onError: (_) => _connectionEnded(socket),
         onDone: () => _connectionEnded(socket),
         cancelOnError: true,
@@ -153,7 +163,111 @@ class _ControllerScreenState extends State<ControllerScreen> {
   void _connectionEnded(Socket socket) {
     if (!identical(_socket, socket)) return;
     _socket = null;
-    if (mounted) setState(() => _connectionMessage = 'Connessione interrotta');
+    _incomingBytes.clear();
+    if (mounted) {
+      setState(() {
+        _connectionMessage = 'Connessione interrotta';
+        _overlayImage = null;
+        _overlayVisible = false;
+        _overlayResponseReceived = false;
+      });
+    }
+  }
+
+  void _receiveOverlay(Socket socket, Uint8List data) {
+    if (!identical(_socket, socket)) return;
+    _incomingBytes.addAll(data);
+    if (_incomingBytes.length < 10) return;
+    final packet = Uint8List.fromList(_incomingBytes);
+    if (packet[0] != 0x46 ||
+        packet[1] != 0x49 ||
+        packet[2] != 0x4F ||
+        packet[3] != 0x31) {
+      socket.destroy();
+      _connectionEnded(socket);
+      return;
+    }
+    final header = ByteData.sublistView(packet);
+    final imageLength = header.getUint32(4, Endian.little);
+    final mimeLength = header.getUint16(8, Endian.little);
+    if (imageLength > _overlayMaxBytes || mimeLength > 32) {
+      socket.destroy();
+      _connectionEnded(socket);
+      return;
+    }
+    final contentStart = 10 + mimeLength;
+    final frameLength = contentStart + imageLength;
+    if (_incomingBytes.length < frameLength) return;
+    final mime = String.fromCharCodes(_incomingBytes.sublist(10, contentStart));
+    Uint8List? image;
+    if (imageLength > 0 && mime.startsWith('image/')) {
+      image = Uint8List.fromList(
+        _incomingBytes.sublist(contentStart, frameLength),
+      );
+    }
+    _incomingBytes.clear();
+    if (mounted) {
+      setState(() {
+        _overlayImage = image;
+        _overlayImageSize = const Size(335, 540);
+        _overlayVisible = false;
+        _overlayResponseReceived = true;
+      });
+    }
+    if (image != null) unawaited(_readOverlaySize(socket, image));
+  }
+
+  Future<void> _readOverlaySize(Socket socket, Uint8List bytes) async {
+    ui.Codec? codec;
+    try {
+      codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      final size = Size(
+        frame.image.width.toDouble(),
+        frame.image.height.toDouble(),
+      );
+      frame.image.dispose();
+      if (mounted &&
+          identical(_socket, socket) &&
+          identical(_overlayImage, bytes)) {
+        setState(() => _overlayImageSize = size);
+      }
+    } catch (_) {
+      if (mounted &&
+          identical(_socket, socket) &&
+          identical(_overlayImage, bytes)) {
+        setState(() {
+          _overlayImage = null;
+          _overlayVisible = false;
+        });
+      }
+    } finally {
+      codec?.dispose();
+    }
+  }
+
+  void _toggleOverlay() {
+    if (!_overlayResponseReceived) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Il core non ha inviato i dati overlay. Verifica la DLL aggiornata e ricarica il gioco.',
+          ),
+        ),
+      );
+      return;
+    }
+    if (_overlayImage == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Overlay non trovato. Controlla nel log RetroArch le righe [FreeIntv] Overlay candidate.',
+          ),
+        ),
+      );
+      return;
+    }
+    setState(() => _overlayVisible = !_overlayVisible);
   }
 
   void _sendState() {
@@ -239,368 +353,190 @@ class _ControllerScreenState extends State<ControllerScreen> {
     final connected = _socket != null;
     return Scaffold(
       body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final compact = connected || constraints.maxHeight < 680;
-            // Keep the keypad's touch targets in a fixed 3×4 grid, matching
-            // the physical panel so future ROM overlays can align to it.
-            final buttonSize = math
-                .min(88.0, (constraints.maxWidth - 116) / 3)
-                .clamp(68.0, 88.0);
-            return Column(
-              children: [
-                if (!connected)
-                  _TopBar(
-                    connected: connected,
-                    message: _connectionMessage,
-                    onRetry: _connect,
-                  ),
-                if (!connected)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(18, 8, 18, 8),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _hostController,
-                            keyboardType: TextInputType.url,
-                            textInputAction: TextInputAction.go,
-                            onSubmitted: (_) => _connectToHost(),
-                            decoration: const InputDecoration(
-                              labelText: 'Indirizzo IP del PC',
-                              hintText: 'es. 192.168.1.20',
-                              isDense: true,
-                            ),
-                          ),
+        child: Column(
+          children: [
+            if (!connected)
+              _TopBar(
+                connected: false,
+                message: _connectionMessage,
+                onRetry: _connect,
+              ),
+            if (!connected)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 8, 18, 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _hostController,
+                        keyboardType: TextInputType.url,
+                        textInputAction: TextInputAction.go,
+                        onSubmitted: (_) => _connectToHost(),
+                        decoration: const InputDecoration(
+                          labelText: 'Indirizzo IP del PC',
+                          hintText: 'es. 192.168.1.20',
+                          isDense: true,
                         ),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                          width: 112,
-                          child: TextField(
-                            controller: _codeController,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              labelText: 'Codice',
-                              isDense: true,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        IconButton.filledTonal(
-                          onPressed: _connectToHost,
-                          icon: const Icon(Icons.link),
-                          tooltip: 'Connetti',
-                        ),
-                      ],
+                      ),
                     ),
-                  ),
-                Expanded(
-                  child: connected
-                      ? Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          child: Center(
-                            child: FittedBox(
-                              fit: BoxFit.contain,
-                              child: ConstrainedBox(
-                                constraints: const BoxConstraints(
-                                  maxWidth: 470,
-                                ),
-                                child: _controllerFace(compact, buttonSize),
-                              ),
-                            ),
-                          ),
-                        )
-                      : SingleChildScrollView(
-                          padding: const EdgeInsets.fromLTRB(18, 4, 18, 12),
-                          child: Center(
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 470),
-                              child: Container(
-                                padding: EdgeInsets.fromLTRB(
-                                  compact ? 18 : 24,
-                                  compact ? 14 : 22,
-                                  compact ? 18 : 24,
-                                  compact ? 16 : 24,
-                                ),
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(38),
-                                  border: Border.all(
-                                    color: const Color(0xFF6A6256),
-                                  ),
-                                  gradient: const LinearGradient(
-                                    begin: Alignment.topLeft,
-                                    end: Alignment.bottomRight,
-                                    colors: [
-                                      Color(0xFF343332),
-                                      Color(0xFF171819),
-                                    ],
-                                  ),
-                                  boxShadow: const [
-                                    BoxShadow(
-                                      color: Colors.black54,
-                                      blurRadius: 30,
-                                      offset: Offset(0, 18),
-                                    ),
-                                  ],
-                                ),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const _BrandPlate(),
-                                    SizedBox(height: compact ? 12 : 20),
-                                    const Align(
-                                      alignment: Alignment.centerLeft,
-                                      child: Text(
-                                        'KEYPAD',
-                                        style: TextStyle(
-                                          color: Color(0xFFB6AA96),
-                                          fontSize: 10,
-                                          letterSpacing: 2.2,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(height: 8),
-                                    Container(
-                                      padding: const EdgeInsets.all(10),
-                                      decoration: BoxDecoration(
-                                        borderRadius: BorderRadius.circular(20),
-                                        color: const Color(0xFF131313),
-                                        border: Border.all(color: Colors.black),
-                                      ),
-                                      child: _Keypad(
-                                        buttonSize: buttonSize,
-                                        selectedKey: _selectedKey,
-                                        onDown: _pressKey,
-                                        onUp: _releaseKey,
-                                      ),
-                                    ),
-                                    SizedBox(height: compact ? 12 : 20),
-                                    FittedBox(
-                                      fit: BoxFit.scaleDown,
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.center,
-                                        children: [
-                                          _Disc(
-                                            diameter: compact ? 158 : 206,
-                                            axis: Offset(
-                                              _axisX / 32767,
-                                              _axisY / 32767,
-                                            ),
-                                            onChanged: _setDisc,
-                                            onReleased: _resetDisc,
-                                          ),
-                                          SizedBox(width: compact ? 14 : 24),
-                                          Column(
-                                            children: [
-                                              _RoundAction(
-                                                label: 'TOP',
-                                                color: const Color(0xFFD8B467),
-                                                pressed: _isPressed(6),
-                                                onDown: (id) =>
-                                                    _controlDown(id, 6),
-                                                onUp: _controlUp,
-                                              ),
-                                              const SizedBox(height: 12),
-                                              Row(
-                                                children: [
-                                                  _RoundAction(
-                                                    label: 'LEFT',
-                                                    color: const Color(
-                                                      0xFFC97850,
-                                                    ),
-                                                    pressed: _isPressed(4),
-                                                    onDown: (id) =>
-                                                        _controlDown(id, 4),
-                                                    onUp: _controlUp,
-                                                  ),
-                                                  const SizedBox(width: 9),
-                                                  _RoundAction(
-                                                    label: 'RIGHT',
-                                                    color: const Color(
-                                                      0xFFB95542,
-                                                    ),
-                                                    pressed: _isPressed(5),
-                                                    onDown: (id) =>
-                                                        _controlDown(id, 5),
-                                                    onUp: _controlUp,
-                                                  ),
-                                                ],
-                                              ),
-                                            ],
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    SizedBox(height: compact ? 12 : 20),
-                                    Row(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: [
-                                        _UtilityButton(
-                                          label: 'PAUSE',
-                                          pressed: _isPressed(_startBit),
-                                          onDown: (id) =>
-                                              _controlDown(id, _startBit),
-                                          onUp: _controlUp,
-                                        ),
-                                        const SizedBox(width: 14),
-                                        _UtilityButton(
-                                          label: 'SWAP',
-                                          pressed: _isPressed(_selectBit),
-                                          onDown: (id) =>
-                                              _controlDown(id, _selectBit),
-                                          onUp: _controlUp,
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
+                    const SizedBox(width: 8),
+                    SizedBox(
+                      width: 112,
+                      child: TextField(
+                        controller: _codeController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'Codice',
+                          isDense: true,
                         ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    IconButton.filledTonal(
+                      onPressed: _connectToHost,
+                      icon: const Icon(Icons.link),
+                      tooltip: 'Connetti',
+                    ),
+                  ],
                 ),
-                if (!connected) const _UsbHelp(),
-              ],
-            );
-          },
+              ),
+            Expanded(
+              child: connected
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 6,
+                      ),
+                      child: Center(
+                        child: FittedBox(
+                          fit: BoxFit.contain,
+                          child: _controllerWithToolbar(),
+                        ),
+                      ),
+                    )
+                  : SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(18, 4, 18, 12),
+                      child: Center(
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: _controllerWithToolbar(),
+                        ),
+                      ),
+                    ),
+            ),
+            if (!connected) const _UsbHelp(),
+          ],
         ),
       ),
     );
   }
 
-  Widget _controllerFace(bool compact, double buttonSize) => ConstrainedBox(
-    constraints: const BoxConstraints(maxWidth: 470),
-    child: Container(
-      padding: EdgeInsets.fromLTRB(
-        compact ? 18 : 24,
-        compact ? 14 : 22,
-        compact ? 18 : 24,
-        compact ? 16 : 24,
-      ),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(38),
-        border: Border.all(color: const Color(0xFF6A6256)),
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF343332), Color(0xFF171819)],
+  Widget _controllerWithToolbar() => SizedBox(
+    width: 370,
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _UtilityButton(
+              label: 'PAUSE',
+              pressed: _isPressed(_startBit),
+              onDown: (id) => _controlDown(id, _startBit),
+              onUp: _controlUp,
+            ),
+            const SizedBox(width: 10),
+            _UtilityButton(
+              label: 'SWAP',
+              pressed: _isPressed(_selectBit),
+              onDown: (id) => _controlDown(id, _selectBit),
+              onUp: _controlUp,
+            ),
+            const SizedBox(width: 10),
+            _UtilityButton(
+              label: 'OVERLAY',
+              pressed: _overlayVisible,
+              onTap: _toggleOverlay,
+            ),
+          ],
         ),
-        boxShadow: const [
-          BoxShadow(
-            color: Colors.black54,
-            blurRadius: 30,
-            offset: Offset(0, 18),
-          ),
-        ],
+        const SizedBox(height: 14),
+        _controllerFace(),
+      ],
+    ),
+  );
+
+  Widget _controllerFace() => Container(
+    width: 370,
+    padding: const EdgeInsets.fromLTRB(16, 12, 16, 18),
+    decoration: BoxDecoration(
+      borderRadius: BorderRadius.circular(28),
+      border: Border.all(color: const Color(0xFF6A6256)),
+      gradient: const LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [Color(0xFF343332), Color(0xFF171819)],
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              _UtilityButton(
-                label: 'PAUSE',
-                pressed: _isPressed(_startBit),
-                onDown: (id) => _controlDown(id, _startBit),
-                onUp: _controlUp,
-              ),
-              const SizedBox(width: 14),
-              _UtilityButton(
-                label: 'SWAP',
-                pressed: _isPressed(_selectBit),
-                onDown: (id) => _controlDown(id, _selectBit),
-                onUp: _controlUp,
-              ),
-            ],
-          ),
-          SizedBox(height: compact ? 12 : 20),
-          const _BrandPlate(),
-          SizedBox(height: compact ? 12 : 20),
-          const Align(
-            alignment: Alignment.centerLeft,
-            child: Text(
-              'KEYPAD',
-              style: TextStyle(
-                color: Color(0xFFB6AA96),
-                fontSize: 10,
-                letterSpacing: 2.2,
-                fontWeight: FontWeight.w700,
-              ),
+      boxShadow: const [
+        BoxShadow(color: Colors.black54, blurRadius: 30, offset: Offset(0, 18)),
+      ],
+    ),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ControllerKeypadPanel(
+          image: _overlayImage,
+          imageSize: _overlayImageSize,
+          overlayVisible: _overlayVisible,
+          selectedKey: _selectedKey,
+          onDown: _pressKey,
+          onUp: _releaseKey,
+        ),
+        const SizedBox(height: 16),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _Disc(
+              diameter: 196,
+              axis: Offset(_axisX / 32767, _axisY / 32767),
+              onChanged: _setDisc,
+              onReleased: _resetDisc,
             ),
-          ),
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(20),
-              color: const Color(0xFF131313),
-              border: Border.all(color: Colors.black),
-            ),
-            child: _Keypad(
-              buttonSize: buttonSize,
-              selectedKey: _selectedKey,
-              onDown: _pressKey,
-              onUp: _releaseKey,
-            ),
-          ),
-          SizedBox(height: compact ? 12 : 20),
-          FittedBox(
-            fit: BoxFit.scaleDown,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              mainAxisAlignment: MainAxisAlignment.center,
+            const SizedBox(width: 12),
+            Column(
               children: [
-                _Disc(
-                  diameter: compact ? 196 : 240,
-                  axis: Offset(_axisX / 32767, _axisY / 32767),
-                  onChanged: _setDisc,
-                  onReleased: _resetDisc,
+                _RoundAction(
+                  label: 'TOP',
+                  color: const Color(0xFFD8B467),
+                  pressed: _isPressed(6),
+                  onDown: (id) => _controlDown(id, 6),
+                  onUp: _controlUp,
                 ),
-                SizedBox(width: compact ? 14 : 24),
-                Column(
+                const SizedBox(height: 12),
+                Row(
                   children: [
                     _RoundAction(
-                      label: 'TOP',
-                      color: const Color(0xFFD8B467),
-                      pressed: _isPressed(6),
-                      onDown: (id) => _controlDown(id, 6),
+                      label: 'LEFT',
+                      color: const Color(0xFFC97850),
+                      pressed: _isPressed(4),
+                      onDown: (id) => _controlDown(id, 4),
                       onUp: _controlUp,
                     ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        _RoundAction(
-                          label: 'LEFT',
-                          color: const Color(0xFFC97850),
-                          pressed: _isPressed(4),
-                          onDown: (id) => _controlDown(id, 4),
-                          onUp: _controlUp,
-                        ),
-                        const SizedBox(width: 9),
-                        _RoundAction(
-                          label: 'RIGHT',
-                          color: const Color(0xFFB95542),
-                          pressed: _isPressed(5),
-                          onDown: (id) => _controlDown(id, 5),
-                          onUp: _controlUp,
-                        ),
-                      ],
+                    const SizedBox(width: 9),
+                    _RoundAction(
+                      label: 'RIGHT',
+                      color: const Color(0xFFB95542),
+                      pressed: _isPressed(5),
+                      onDown: (id) => _controlDown(id, 5),
+                      onUp: _controlUp,
                     ),
                   ],
                 ),
               ],
             ),
-          ),
-        ],
-      ),
+          ],
+        ),
+      ],
     ),
   );
   bool _isPressed(int bit) => (_buttonBits & (1 << bit)) != 0;
@@ -695,12 +631,106 @@ class _BrandPlate extends StatelessWidget {
   );
 }
 
+/// The card header and the key grid share one coordinate system. Numbers on
+/// classic cards are near 37% of the image height; the header stays above them.
+class ControllerKeypadPanel extends StatelessWidget {
+  const ControllerKeypadPanel({
+    super.key,
+    this.image,
+    this.imageSize = const Size(335, 540),
+    required this.overlayVisible,
+    required this.selectedKey,
+    required this.onDown,
+    required this.onUp,
+  });
+
+  final Uint8List? image;
+  final Size imageSize;
+  final bool overlayVisible;
+  final int? selectedKey;
+  final void Function(int pointer, int index) onDown;
+  final void Function(int pointer) onUp;
+
+  static Rect keypadRect(Rect card) => Rect.fromLTRB(
+    card.left + card.width * .098,
+    card.top + card.height * .294,
+    card.left + card.width * .887,
+    card.top + card.height * .951,
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    const width = 300.0;
+    final height = (width * imageSize.height / imageSize.width).clamp(
+      360.0,
+      540.0,
+    );
+    final bounds = Rect.fromLTWH(0, 0, width, height);
+    final fitted = applyBoxFit(BoxFit.contain, imageSize, bounds.size);
+    final card = Alignment.center.inscribe(fitted.destination, bounds);
+    final keypad = keypadRect(card);
+    final showCard = overlayVisible && image != null;
+    return SizedBox(
+      key: const ValueKey('controller-card-slot'),
+      width: width,
+      height: height,
+      child: Stack(
+        children: [
+          if (!showCard)
+            Positioned(
+              top: card.top + card.height * .075,
+              left: 0,
+              right: 0,
+              child: const Center(child: _BrandPlate()),
+            ),
+          Positioned.fromRect(
+            rect: keypad.inflate(8),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(18),
+                color: const Color(0xFF131313),
+                border: Border.all(color: Colors.black),
+              ),
+            ),
+          ),
+          if (showCard)
+            Positioned.fromRect(
+              rect: card,
+              child: IgnorePointer(
+                child: Image.memory(
+                  image!,
+                  key: const ValueKey('overlay-card-image'),
+                  fit: BoxFit.contain,
+                  gaplessPlayback: true,
+                ),
+              ),
+            ),
+          Positioned.fromRect(
+            rect: keypad,
+            child: FittedBox(
+              fit: BoxFit.fill,
+              child: _Keypad(
+                buttonSize: 76,
+                selectedKey: selectedKey,
+                overlay: showCard,
+                onDown: onDown,
+                onUp: onUp,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _Keypad extends StatelessWidget {
   const _Keypad({
     required this.buttonSize,
     required this.selectedKey,
     required this.onDown,
     required this.onUp,
+    this.overlay = false,
   });
 
   static const _labels = [
@@ -718,6 +748,7 @@ class _Keypad extends StatelessWidget {
     'Enter',
   ];
   final double buttonSize;
+  final bool overlay;
   final int? selectedKey;
   final void Function(int pointer, int index) onDown;
   final void Function(int pointer) onUp;
@@ -739,6 +770,8 @@ class _Keypad extends StatelessWidget {
                 right: column == 2 ? 0 : buttonSize * .09,
               ),
               child: Listener(
+                key: ValueKey('controller-key-$index'),
+                behavior: HitTestBehavior.opaque,
                 onPointerDown: (event) {
                   HapticFeedback.selectionClick();
                   onDown(event.pointer, index);
@@ -748,23 +781,30 @@ class _Keypad extends StatelessWidget {
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 70),
                   width: buttonSize,
-                  height: buttonSize * .86,
+                  height: buttonSize,
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(buttonSize * .2),
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: selected
-                          ? const [Color(0xFFFFE59A), Color(0xFFD1A332)]
-                          : const [Color(0xFFE1C15F), Color(0xFF9B7926)],
-                    ),
+                    color: overlay && selected ? const Color(0x55FFE59A) : null,
+                    gradient: overlay
+                        ? null
+                        : LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: selected
+                                ? const [Color(0xFFFFE59A), Color(0xFFD1A332)]
+                                : const [Color(0xFFE1C15F), Color(0xFF9B7926)],
+                          ),
                     border: Border.all(
-                      color: selected
+                      color: overlay && !selected
+                          ? Colors.transparent
+                          : selected
                           ? const Color(0xFFFFE9A8)
                           : const Color(0xFF594519),
                       width: selected ? 2.4 : 1.5,
                     ),
-                    boxShadow: selected
+                    boxShadow: overlay
+                        ? const []
+                        : selected
                         ? const [
                             BoxShadow(color: Color(0x88E1B764), blurRadius: 12),
                           ]
@@ -780,7 +820,9 @@ class _Keypad extends StatelessWidget {
                   child: Text(
                     _labels[index],
                     style: TextStyle(
-                      color: const Color(0xFF25221D),
+                      color: overlay
+                          ? Colors.transparent
+                          : const Color(0xFF25221D),
                       fontSize: special ? buttonSize * .145 : buttonSize * .3,
                       letterSpacing: special ? -.2 : 0,
                       fontWeight: FontWeight.w800,
@@ -965,20 +1007,26 @@ class _UtilityButton extends StatelessWidget {
   const _UtilityButton({
     required this.label,
     required this.pressed,
-    required this.onDown,
-    required this.onUp,
+    this.onDown,
+    this.onUp,
+    this.onTap,
   });
 
   final String label;
   final bool pressed;
-  final ValueChanged<int> onDown;
-  final ValueChanged<int> onUp;
+  final ValueChanged<int>? onDown;
+  final ValueChanged<int>? onUp;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) => Listener(
-    onPointerDown: (event) => onDown(event.pointer),
-    onPointerUp: (event) => onUp(event.pointer),
-    onPointerCancel: (event) => onUp(event.pointer),
+    onPointerDown: (event) {
+      HapticFeedback.selectionClick();
+      onDown?.call(event.pointer);
+      onTap?.call();
+    },
+    onPointerUp: (event) => onUp?.call(event.pointer),
+    onPointerCancel: (event) => onUp?.call(event.pointer),
     child: AnimatedContainer(
       duration: const Duration(milliseconds: 60),
       padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 10),

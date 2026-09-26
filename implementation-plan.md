@@ -23,7 +23,7 @@ Il repository `FreeIntv-master` contiene un core **libretro**, non un’applicaz
 
 Il core non espone oggi un protocollo remoto. L’architettura richiesta aggiunge al modulo FreeIntv un ricevitore nativo integrato: il core accetta connessioni dallo smartphone e aggiorna direttamente gli stati di input che `retro_run()` applica a FreeIntv. Per Wi‑Fi, il telefono e il PC devono essere sulla stessa LAN e l’utente inserisce nell’app l’indirizzo IP del PC. Non viene installato né avviato alcun programma ricevitore separato, driver, ADB o gamepad virtuale.
 
-FreeIntv supporta già overlay PNG e JPG nella cartella `system/freeintv_overlays`, associati al nome base della ROM; l’immagine è usata dal display multi-schermo del core. La futura funzione dell’app dovrà rendere disponibile quell’immagine sul telefono e identificare la ROM attiva.
+FreeIntv supporta overlay PNG e JPG associati alla ROM. Il core cerca prima accanto alla ROM (`<nome-base>.png`/`.jpg`, accettando anche il nome completo seguito dall’estensione), poi nella cartella `system/freeintv_overlays`; l’immagine selezionata viene trasferita al telefono.
 
 ## 3. Architettura proposta
 
@@ -95,7 +95,7 @@ FreeIntv continuerà a leggere gli ingressi RetroPad esistenti. Un modulo remoto
 - Catalogo locale associato a ROM, con nome visualizzato, percorso/hash ROM, immagine, provenienza e licenza/diritti.
 - Importazione manuale e associazione ROM, anteprima e gestione di immagini mancanti o non valide; non distribuire immagini commerciali senza autorizzazione.
 - Il core conosce il percorso ROM passato a `retro_load_game()` e può inviare all’app il basename tramite protocollo. Per Frog Bog l’app dovrà associare l’overlay con il nome base della ROM, senza estensione, e conservarlo come asset utente.
-- Il layout mobile usa una griglia stabile 3×4; dimensioni e spaziatura sono scalate insieme mantenendo i centri dei tasti in coordinate normalizzate. Il core cerca overlay in `system/freeintv_overlays/<basename-ROM>.png` o `.jpg`, eliminando l’estensione della ROM. Per mostrarlo nell’app occorre identificare la ROM attiva e rendere disponibile l’immagine sul telefono (importazione locale con stesso basename oppure trasferimento dal core). Il formato core 370×600 è un riferimento per calibrare l’allineamento, non un vincolo per la grafica mobile.
+- Il layout mobile usa una griglia stabile 3×4; dimensioni e spaziatura sono scalate insieme mantenendo i centri dei tasti in coordinate normalizzate. Il core cerca overlay accanto alla ROM, poi in `system/freeintv_overlays`; li trasferisce al telefono quando la connessione viene stabilita. Il formato core 370×600 è un riferimento per calibrare l’allineamento, non un vincolo per la grafica mobile.
 - Testare overlay associati correttamente, nessun overlay, immagine errata e tasti sovrapposti all’input principale.
 
 ## 5. Mappatura funzionale dell’interfaccia

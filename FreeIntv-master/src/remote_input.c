@@ -1,5 +1,6 @@
 #include "remote_input.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #if defined(_WIN32)
@@ -15,6 +16,8 @@
 #define REMOTE_BUFFER_SIZE 512
 #define REMOTE_TIMEOUT_MS 500
 #define REMOTE_CODE_MAX 31
+#define REMOTE_OVERLAY_MAX_SIZE (8u * 1024u * 1024u)
+#define REMOTE_OVERLAY_HEADER_SIZE 10
 
 static SOCKET listener_socket = INVALID_SOCKET;
 static SOCKET client_socket = INVALID_SOCKET;
@@ -28,6 +31,26 @@ static DWORD last_packet_time = 0;
 static remote_input_state_t remote_state;
 static char pairing_code[REMOTE_CODE_MAX + 1] = "482731";
 static int authenticated = 0;
+static uint8_t *overlay_response = NULL;
+static size_t overlay_response_size = 0;
+static size_t overlay_response_offset = 0;
+static int overlay_response_pending = 0;
+
+static void close_client(void);
+
+static void write_u16_le(uint8_t *p, uint16_t value)
+{
+	p[0] = (uint8_t)value;
+	p[1] = (uint8_t)(value >> 8);
+}
+
+static void write_u32_le(uint8_t *p, uint32_t value)
+{
+	p[0] = (uint8_t)value;
+	p[1] = (uint8_t)(value >> 8);
+	p[2] = (uint8_t)(value >> 16);
+	p[3] = (uint8_t)(value >> 24);
+}
 
 static int is_private_ipv4(uint32_t address)
 {
@@ -90,7 +113,54 @@ static void close_client(void)
 	has_sequence = 0;
 	authenticated = 0;
 	last_packet_time = 0;
+	overlay_response_offset = 0;
+	overlay_response_pending = 0;
 	memset(&remote_state, 0, sizeof(remote_state));
+}
+
+void remote_input_set_overlay(const uint8_t *data, size_t data_size,
+	const char *mime_type)
+{
+	const char *mime = (data && data_size && mime_type) ? mime_type : "";
+	size_t mime_size = strlen(mime);
+	size_t payload_size = (data && data_size <= REMOTE_OVERLAY_MAX_SIZE) ? data_size : 0;
+	size_t response_size = REMOTE_OVERLAY_HEADER_SIZE + mime_size + payload_size;
+	uint8_t *response = (uint8_t *)malloc(response_size);
+	if (!response)
+		return;
+	memcpy(response, "FIO1", 4);
+	write_u32_le(response + 4, (uint32_t)payload_size);
+	write_u16_le(response + 8, (uint16_t)mime_size);
+	if (mime_size)
+		memcpy(response + REMOTE_OVERLAY_HEADER_SIZE, mime, mime_size);
+	if (payload_size)
+		memcpy(response + REMOTE_OVERLAY_HEADER_SIZE + mime_size, data, payload_size);
+	free(overlay_response);
+	overlay_response = response;
+	overlay_response_size = response_size;
+	overlay_response_offset = 0;
+	overlay_response_pending = authenticated && client_socket != INVALID_SOCKET;
+}
+
+static void send_overlay_response(void)
+{
+	int sent;
+	if (!overlay_response_pending || client_socket == INVALID_SOCKET || !overlay_response)
+		return;
+	sent = send(client_socket,
+		(const char *)overlay_response + overlay_response_offset,
+		(int)(overlay_response_size - overlay_response_offset), 0);
+	if (sent > 0)
+	{
+		overlay_response_offset += (size_t)sent;
+		if (overlay_response_offset >= overlay_response_size)
+		{
+			overlay_response_offset = 0;
+			overlay_response_pending = 0;
+		}
+	}
+	else if (sent == 0 || WSAGetLastError() != WSAEWOULDBLOCK)
+		close_client();
 }
 
 static void stop_listener(void)
@@ -226,6 +296,8 @@ static void poll_listener(void)
 						packet_buffer[code_length] == '\n')
 					{
 						authenticated = 1;
+						overlay_response_offset = 0;
+						overlay_response_pending = overlay_response != NULL;
 						memmove(packet_buffer, packet_buffer + code_length + 1,
 							(size_t)(total - code_length - 1));
 						packet_buffer_size = total - code_length - 1;
@@ -247,6 +319,7 @@ static void poll_listener(void)
 
 	if (remote_state.connected && (DWORD)(GetTickCount() - last_packet_time) > REMOTE_TIMEOUT_MS)
 		close_client();
+	send_overlay_response();
 }
 
 void remote_input_set_enabled(int enabled)
@@ -307,6 +380,13 @@ remote_input_state_t remote_input_get_state(void)
 static remote_input_state_t remote_state;
 void remote_input_set_enabled(int enabled) { (void)enabled; }
 void remote_input_set_pairing_code(const char *code) { (void)code; }
+void remote_input_set_overlay(const uint8_t *data, size_t data_size,
+	const char *mime_type)
+{
+	(void)data;
+	(void)data_size;
+	(void)mime_type;
+}
 void remote_input_get_host_address(char *buffer, size_t buffer_size)
 {
 	if (buffer && buffer_size > 0)

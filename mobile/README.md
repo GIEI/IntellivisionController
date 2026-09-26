@@ -11,6 +11,10 @@ This Flutter app sends touchscreen controller state directly to the FreeIntv cor
 
 The current host listener is Windows-only, accepts one phone on TCP port 55355, and releases all inputs after 500 ms without packets. No PC receiver program, ADB, USB debugging, or driver is required. If Windows Firewall asks, allow RetroArch on the private network. Both devices must be on the same local network; do not expose port 55355 to the internet. Pairing currently sends the code in plaintext and is suitable only for development on a trusted LAN; authenticated encryption is required before public distribution. Direct Bluetooth and USB accessory transports are future work.
 
+When the loaded ROM has a matching PNG or JPG, the core transfers it to the phone after pairing. The core checks the ROM's folder first, then `system/freeintv_overlays`. Tap **OVERLAY** to show or hide it above the 12 keypad buttons; the overlay layer does not block button touches. Image names must match the ROM basename, for example `Frog Bog.jpg` for `Frog Bog.bin`.
+
+The card retains its original aspect ratio and includes a header above the keypad for the game title. The square buttons and overlay touch regions share the same positions, calibrated to the printed first row on the classic BurgerTime card. PAUSE, SWAP, and OVERLAY sit in a toolbar outside the controller body. While connected, the complete controller scales to the available screen without scrolling. Cards with a different printed key layout may need separate alignment metadata in a future version.
+
 ## Packet reference
 
 See [`../protocol/remote-controller-v1.md`](../protocol/remote-controller-v1.md).

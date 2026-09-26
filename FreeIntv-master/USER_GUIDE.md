@@ -70,15 +70,15 @@ Mattel Intellivision games were often meant to be played with game-specific card
 To use custom game overlays with the touchscreen UI on Android or mouse input on Windows/Linux:
 
 **Folder Location:**
-- Create a folder named `freeintv_overlays` in the same directory where you keep your BIOS files (`exec.bin` and `grom.bin`)
+- Create a folder named `freeintv_overlays` in the same directory where you keep your BIOS files (`exec.bin` and `grom.bin`), or place the image beside its ROM
 - Typically: `RetroArch/system/freeintv_overlays/`
 
 **Overlay Image Specifications:**
 - **Dimensions**: 370×600 pixels
-- **Format**: PNG image (any color depth)
-- **Naming**: Match your ROM filename exactly (case-insensitive on most systems)
-  - Example: If your ROM is `astrosmash.bin`, name the overlay `astrosmash.png`
-  - Example: If your ROM is `nightstalker.rom`, name the overlay `nightstalker.png`
+- **Format**: PNG or JPG image
+- **Naming**: Match the ROM basename, without its extension (case-insensitive on most systems)
+  - Example: If your ROM is `astrosmash.bin`, name the overlay `astrosmash.png` or `astrosmash.jpg`
+  - The full filename with an added extension is also accepted: `astrosmash.bin.jpg`
 
 **Example Folder Structure:**
 ```

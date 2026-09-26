@@ -16,6 +16,8 @@ The bitfield uses bits 0–3 for up/down/left/right; 4–6 for left/right/top ac
 
 The phone sends a snapshot every 20 ms, including unchanged state. The core polls the nonblocking socket from `retro_run()` input polling, accepts one client, and clears state after 500 ms without a valid packet or when the connection closes. Invalid/stale sequence numbers are ignored. TCP data may split or combine packets, so the receiver re-synchronizes on the packet magic.
 
+After pairing, the core sends one ROM overlay response to the phone. Its 10-byte header is `FIO1`, a 32-bit little-endian image length, and a 16-bit little-endian MIME length, followed by the MIME string and encoded PNG/JPG bytes. A zero image length means that the current ROM has no overlay. Images larger than 8 MiB are not transferred. The phone caches the image for the session; its OVERLAY control toggles the image over the keypad without intercepting touches.
+
 Bluetooth and a direct USB accessory transport are not part of this initial implementation. The Wi-Fi transport requires the phone and PC to share a trusted LAN. The port must not be forwarded/exposed to the internet. The pairing code is not encryption; transport encryption/authenticated pairing remains a release-hardening task.
 
-The FreeIntv core accepts per-ROM overlay images as PNG or `.jpg`, named after the ROM basename without its extension, under `system/freeintv_overlays/` (for example, `frogbog.jpg` for `frogbog.bin`).
+The FreeIntv core accepts per-ROM overlay images as PNG or JPG, named after the ROM basename without its extension. It checks beside the ROM first, then `system/freeintv_overlays/` (for example, `frogbog.jpg` for `frogbog.bin`).

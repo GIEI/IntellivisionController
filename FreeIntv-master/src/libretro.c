@@ -25,6 +25,7 @@
 #include "libretro_core_options.h"
 #include <file/file_path.h>
 #include <retro_miscellaneous.h>
+#include <compat/fopen_utf8.h>
 #include <streams/file_stream.h>
 #include <vfs/vfs_implementation.h>
 
@@ -101,6 +102,8 @@ static unsigned int* overlay_buffer = NULL;
 static int overlay_loaded = 0;
 static int overlay_width = 370;
 static int overlay_height = 600;
+static int phone_overlay_available = 0;
+static retro_log_printf_t Log;
 
 // Controller base
 static unsigned int* controller_base = NULL;
@@ -282,21 +285,182 @@ static void build_overlay_path(const char* rom_path, char* overlay_path, size_t 
     #endif
 }
 
+// Also accept an overlay beside the ROM file, which is convenient for users
+// keeping each game's assets together.
+static void build_overlay_path_beside_rom(const char *rom_path,
+        char *overlay_path, size_t overlay_path_size, const char *extension)
+{
+    const char *filename;
+    const char *last_slash;
+    const char *last_backslash;
+    char rom_basename[512];
+    char *ext;
+    size_t directory_size;
+    size_t basename_size;
+    size_t extension_size;
+    if (!rom_path || !overlay_path || overlay_path_size == 0 || !extension) {
+        if (overlay_path && overlay_path_size)
+            overlay_path[0] = '\0';
+        return;
+    }
+    last_slash = strrchr(rom_path, '/');
+    last_backslash = strrchr(rom_path, '\\');
+    if (!last_slash || (last_backslash && last_backslash > last_slash))
+        last_slash = last_backslash;
+    filename = last_slash ? last_slash + 1 : rom_path;
+    strncpy(rom_basename, filename, sizeof(rom_basename) - 1);
+    rom_basename[sizeof(rom_basename) - 1] = '\0';
+    ext = strrchr(rom_basename, '.');
+    if (ext)
+        *ext = '\0';
+    directory_size = last_slash ? (size_t)(last_slash - rom_path + 1) : 0;
+    basename_size = strlen(rom_basename);
+    extension_size = strlen(extension);
+    if (directory_size + basename_size + extension_size + 1 > overlay_path_size) {
+        overlay_path[0] = '\0';
+        return;
+    }
+    memcpy(overlay_path, rom_path, directory_size);
+    memcpy(overlay_path + directory_size, rom_basename, basename_size);
+    memcpy(overlay_path + directory_size + basename_size, extension, extension_size + 1);
+}
+
+static void build_overlay_path_with_full_rom_name(const char *rom_path,
+        char *overlay_path, size_t overlay_path_size, const char *extension)
+{
+    const char *last_slash;
+    const char *last_backslash;
+    const char *filename;
+    size_t directory_size;
+    size_t filename_size;
+    size_t extension_size;
+    if (!rom_path || !overlay_path || overlay_path_size == 0 || !extension) {
+        if (overlay_path && overlay_path_size)
+            overlay_path[0] = '\0';
+        return;
+    }
+    last_slash = strrchr(rom_path, '/');
+    last_backslash = strrchr(rom_path, '\\');
+    if (!last_slash || (last_backslash && last_backslash > last_slash))
+        last_slash = last_backslash;
+    filename = last_slash ? last_slash + 1 : rom_path;
+    directory_size = last_slash ? (size_t)(last_slash - rom_path + 1) : 0;
+    filename_size = strlen(filename);
+    extension_size = strlen(extension);
+    if (directory_size + filename_size + extension_size + 1 > overlay_path_size) {
+        overlay_path[0] = '\0';
+        return;
+    }
+    memcpy(overlay_path, rom_path, directory_size);
+    memcpy(overlay_path + directory_size, filename, filename_size);
+    memcpy(overlay_path + directory_size + filename_size, extension, extension_size + 1);
+}
+
+/* stb_image's stdio path uses fopen(), which does not reliably open UTF-8
+ * paths on Windows. Read the asset through libretro-common's UTF-8 helper,
+ * then decode it from memory. */
+static unsigned char *load_overlay_image_utf8(const char *path,
+        int *width, int *height, int *channels,
+        unsigned char **encoded_data, size_t *encoded_size, const char **failure)
+{
+    FILE *file;
+    long file_size;
+    unsigned char *file_data;
+    unsigned char *image_data;
+    size_t bytes_read;
+
+    *encoded_data = NULL;
+    *encoded_size = 0;
+    *failure = "invalid path";
+    if (!path || !*path)
+        return NULL;
+    file = (FILE *)fopen_utf8(path, "rb");
+    if (!file) {
+        *failure = errno == ENOENT ? "file not found" :
+            (errno == EACCES ? "access denied" : strerror(errno));
+        return NULL;
+    }
+    if (fseek(file, 0, SEEK_END) != 0 ||
+            (file_size = ftell(file)) <= 0 || file_size > 8 * 1024 * 1024 ||
+            fseek(file, 0, SEEK_SET) != 0)
+    {
+        fclose(file);
+        *failure = "file empty, larger than 8 MiB, or seek failed";
+        return NULL;
+    }
+    file_data = (unsigned char *)malloc((size_t)file_size);
+    if (!file_data)
+    {
+        fclose(file);
+        *failure = "out of memory";
+        return NULL;
+    }
+    bytes_read = fread(file_data, 1, (size_t)file_size, file);
+    fclose(file);
+    if (bytes_read != (size_t)file_size)
+    {
+        free(file_data);
+        *failure = "incomplete file read";
+        return NULL;
+    }
+    image_data = stbi_load_from_memory(file_data, (int)file_size,
+            width, height, channels, 4);
+    if (!image_data) {
+        *failure = stbi_failure_reason() ? stbi_failure_reason() : "invalid image";
+        free(file_data);
+        return NULL;
+    }
+    *encoded_data = file_data;
+    *encoded_size = bytes_read;
+    *failure = NULL;
+    return image_data;
+}
+
 // Load overlay for ROM
 static void load_overlay_for_rom(const char* rom_path, const char* system_dir)
 {
-    char overlay_path[1024], jpg_path[1024];
-    int width, height, channels, y, x, from_file;
+    char rom_dir_png_path[1024], rom_dir_jpg_path[1024];
+    char rom_full_png_path[1024], rom_full_jpg_path[1024];
+    char system_png_path[1024], system_jpg_path[1024];
+    char *candidate_paths[6];
+    const char *candidate_mime_types[6];
+    int width, height, channels, y, x, from_file, candidate;
     unsigned char* img_data;
     unsigned char* pixel;
     unsigned int alpha, r, g, b;
-    char* ext;
     
-    if (!rom_path || !system_dir || !multi_screen_enabled) {
+    const char *selected_path = NULL;
+    const char *mime_type = NULL;
+    unsigned char *encoded_data = NULL;
+    size_t encoded_size = 0;
+    
+    remote_input_set_overlay(NULL, 0, NULL);
+    phone_overlay_available = 0;
+    if (!rom_path) {
+        if (Log)
+            Log(RETRO_LOG_WARN, "[FreeIntv] ROM path is missing; cannot search for a controller overlay.\n");
         return;
     }
     
-    build_overlay_path(rom_path, overlay_path, sizeof(overlay_path), system_dir);
+    build_overlay_path_beside_rom(rom_path, rom_dir_png_path,
+        sizeof(rom_dir_png_path), ".png");
+    build_overlay_path_beside_rom(rom_path, rom_dir_jpg_path,
+        sizeof(rom_dir_jpg_path), ".jpg");
+    build_overlay_path_with_full_rom_name(rom_path, rom_full_png_path,
+        sizeof(rom_full_png_path), ".png");
+    build_overlay_path_with_full_rom_name(rom_path, rom_full_jpg_path,
+        sizeof(rom_full_jpg_path), ".jpg");
+    if (system_dir && *system_dir)
+        build_overlay_path(rom_path, system_png_path, sizeof(system_png_path), system_dir);
+    else
+        system_png_path[0] = '\0';
+    strncpy(system_jpg_path, system_png_path, sizeof(system_jpg_path) - 1);
+    system_jpg_path[sizeof(system_jpg_path) - 1] = '\0';
+    {
+        char *dot = strrchr(system_jpg_path, '.');
+        if (dot)
+            strcpy(dot, ".jpg");
+    }
     
     overlay_loaded = 0;
     
@@ -305,24 +469,55 @@ static void load_overlay_for_rom(const char* rom_path, const char* system_dir)
         overlay_buffer = NULL;
     }
     
-    img_data = stbi_load(overlay_path, &width, &height, &channels, 4);
-    from_file = 1;
-    
-    if (!img_data) {
-        // Try JPG format
-        strncpy(jpg_path, overlay_path, sizeof(jpg_path) - 1);
-        ext = strrchr(jpg_path, '.');
-        if (ext) {
-            strcpy(ext, ".jpg");
-            img_data = stbi_load(jpg_path, &width, &height, &channels, 4);
+    candidate_paths[0] = rom_dir_png_path;
+    candidate_paths[1] = rom_dir_jpg_path;
+    candidate_paths[2] = rom_full_png_path;
+    candidate_paths[3] = rom_full_jpg_path;
+    candidate_paths[4] = system_png_path;
+    candidate_paths[5] = system_jpg_path;
+    candidate_mime_types[0] = candidate_mime_types[2] = candidate_mime_types[4] = "image/png";
+    candidate_mime_types[1] = candidate_mime_types[3] = candidate_mime_types[5] = "image/jpeg";
+    img_data = NULL;
+    from_file = 0;
+    if (Log)
+        Log(RETRO_LOG_INFO, "[FreeIntv] Searching overlay for ROM: %s\n", rom_path);
+    for (candidate = 0; candidate < 6 && !img_data; candidate++) {
+        const char *failure = "system directory unavailable";
+        if (candidate_paths[candidate][0])
+            img_data = load_overlay_image_utf8(candidate_paths[candidate],
+                &width, &height, &channels, &encoded_data, &encoded_size, &failure);
+        if (Log)
+            Log(RETRO_LOG_INFO, "[FreeIntv] Overlay candidate '%s': %s\n",
+                candidate_paths[candidate][0] ? candidate_paths[candidate] : "<system directory unavailable>",
+                img_data ? "loaded" : failure);
+        if (img_data) {
+            selected_path = candidate_paths[candidate];
+            mime_type = candidate_mime_types[candidate];
             from_file = 1;
         }
     }
+
+    if (img_data && from_file) {
+        remote_input_set_overlay(encoded_data, encoded_size, mime_type);
+        phone_overlay_available = 1;
+        free(encoded_data);
+    }
+    if (Log && phone_overlay_available)
+        Log(RETRO_LOG_INFO, "[FreeIntv] Phone overlay ready: %s (%d x %d)\n",
+            selected_path, width, height);
     
     // Fall back to embedded default image
-    if (!img_data) {
+    if (!img_data && multi_screen_enabled) {
         img_data = stbi_load_from_memory(default_keypad_image, default_keypad_image_len, &width, &height, &channels, 4);
         from_file = 0;
+    }
+
+    if (!img_data && !multi_screen_enabled) {
+        overlay_loaded = 0;
+        current_rom_path[0] = '\0';
+        strncpy(current_rom_path, rom_path, sizeof(current_rom_path) - 1);
+        current_rom_path[sizeof(current_rom_path) - 1] = '\0';
+        return;
     }
     
     if (img_data) {
@@ -344,10 +539,7 @@ static void load_overlay_for_rom(const char* rom_path, const char* system_dir)
             }
             init_overlay_hotspots();
         }
-        // Only free if it came from a file, not if it's embedded
-        if (from_file) {
-            stbi_image_free(img_data);
-        }
+        stbi_image_free(img_data);
     } else {
         overlay_width = 370;
         overlay_height = 600;
@@ -369,7 +561,7 @@ static void load_overlay_for_rom(const char* rom_path, const char* system_dir)
         }
     }
     
-    overlay_loaded = 1;
+    overlay_loaded = overlay_buffer != NULL;
     strncpy(current_rom_path, rom_path, sizeof(current_rom_path) - 1);
 }
 
@@ -738,7 +930,6 @@ retro_audio_sample_t Audio;
 retro_audio_sample_batch_t AudioBatch;
 retro_input_poll_t InputPoll;
 retro_input_state_t InputState;
-static retro_log_printf_t Log;
 
 static void show_remote_controller_address(void)
 {
@@ -750,7 +941,8 @@ static void show_remote_controller_address(void)
 	if (!address[0])
 		strcpy(address, "IP non disponibile");
 	snprintf(message, sizeof(message),
-		"Phone controller: PC %s  |  porta %d", address, REMOTE_INPUT_PORT);
+		"Phone controller: PC %s:%d  |  ROM overlay %s", address,
+		REMOTE_INPUT_PORT, phone_overlay_available ? "found" : "not found");
 	if (Log)
 		Log(RETRO_LOG_INFO, "%s\n", message);
 	memset(&extended_message, 0, sizeof(extended_message));
@@ -1515,11 +1707,11 @@ unsigned retro_get_region(void)
 void retro_get_system_info(struct retro_system_info *info)
 {
 	memset(info, 0, sizeof(*info));
-	info->library_name = "freeintv";
+	info->library_name = "FreeIntv Controller";
 #ifndef GIT_VERSION
 #define GIT_VERSION ""
 #endif
-	info->library_version = "1.2 " GIT_VERSION;
+    info->library_version = "1.2 Controller 2026.09.4 " GIT_VERSION;
 	info->valid_extensions = "int|bin|rom";
 	info->need_fullpath = true;
 }

@@ -48,6 +48,8 @@ typedef struct remote_input_state
 void remote_input_set_enabled(int enabled);
 void remote_input_set_pairing_code(const char *code);
 void remote_input_get_host_address(char *buffer, size_t buffer_size);
+void remote_input_set_overlay(const uint8_t *data, size_t data_size,
+	const char *mime_type);
 void remote_input_poll(void);
 remote_input_state_t remote_input_get_state(void);
 

@@ -113,7 +113,10 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "Set the same numeric pairing code in the phone app. Use at least 6 digits. The network input listener accepts one paired phone.",
       NULL,
       "input",
-      { { NULL, NULL } },
+      {
+         { "482731", "482731" },
+         { NULL, NULL },
+      },
       "482731"
    },
    { NULL, NULL, NULL, NULL, NULL, NULL, {{0}}, NULL },
