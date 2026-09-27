@@ -1,8 +1,4 @@
-/*
- * USB development transport for the FreeIntv phone controller.
- * The TCP listener is loopback-only; Android reaches it over USB through
- * `adb reverse tcp:55355 tcp:55355`.
- */
+/* Wi-Fi TCP and Bluetooth Classic RFCOMM phone-controller transports. */
 #ifndef FREEINTV_REMOTE_INPUT_H
 #define FREEINTV_REMOTE_INPUT_H
 
@@ -46,6 +42,8 @@ typedef struct remote_input_state
 } remote_input_state_t;
 
 void remote_input_set_enabled(int enabled);
+void remote_input_set_transport(const char *transport);
+int remote_input_uses_bluetooth(void);
 void remote_input_set_pairing_code(const char *code);
 void remote_input_get_host_address(char *buffer, size_t buffer_size);
 void remote_input_set_overlay(const uint8_t *data, size_t data_size,

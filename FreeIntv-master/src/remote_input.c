@@ -9,6 +9,7 @@
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <ws2bth.h>
 #include <windows.h>
 #include <stdio.h>
 
@@ -20,9 +21,16 @@
 #define REMOTE_OVERLAY_HEADER_SIZE 10
 
 static SOCKET listener_socket = INVALID_SOCKET;
+static SOCKET bluetooth_listener_socket = INVALID_SOCKET;
 static SOCKET client_socket = INVALID_SOCKET;
 static int winsock_started = 0;
 static int remote_enabled = 0;
+static int remote_transport_bluetooth = 0;
+static WSAQUERYSETW bluetooth_service;
+static CSADDR_INFO bluetooth_service_address;
+static SOCKADDR_BTH bluetooth_service_sockaddr;
+static wchar_t bluetooth_service_name[] = L"FreeIntv Phone Controller";
+static int bluetooth_service_registered = 0;
 static int packet_buffer_size = 0;
 static uint8_t packet_buffer[REMOTE_BUFFER_SIZE];
 static uint32_t last_sequence = 0;
@@ -70,7 +78,7 @@ void remote_input_get_host_address(char *buffer, size_t buffer_size)
 	if (!buffer || buffer_size == 0)
 		return;
 	buffer[0] = '\0';
-	if (listener_socket == INVALID_SOCKET)
+	if (remote_transport_bluetooth || listener_socket == INVALID_SOCKET)
 		return;
 	if (gethostname(hostname, sizeof(hostname)) != 0)
 		return;
@@ -166,6 +174,16 @@ static void send_overlay_response(void)
 static void stop_listener(void)
 {
 	close_client();
+	if (bluetooth_service_registered)
+	{
+		WSASetServiceW(&bluetooth_service, RNRSERVICE_DELETE, 0);
+		bluetooth_service_registered = 0;
+	}
+	if (bluetooth_listener_socket != INVALID_SOCKET)
+	{
+		closesocket(bluetooth_listener_socket);
+		bluetooth_listener_socket = INVALID_SOCKET;
+	}
 	if (listener_socket != INVALID_SOCKET)
 	{
 		closesocket(listener_socket);
@@ -252,12 +270,13 @@ void remote_input_set_pairing_code(const char *code)
 
 static void poll_listener(void)
 {
-	if (listener_socket == INVALID_SOCKET)
+	SOCKET active_socket = remote_transport_bluetooth ? bluetooth_listener_socket : listener_socket;
+	if (active_socket == INVALID_SOCKET)
 		return;
 
 	if (client_socket == INVALID_SOCKET)
 	{
-		SOCKET accepted = accept(listener_socket, NULL, NULL);
+		SOCKET accepted = accept(active_socket, NULL, NULL);
 		if (accepted != INVALID_SOCKET)
 		{
 			BOOL no_delay = TRUE;
@@ -265,7 +284,9 @@ static void poll_listener(void)
 				closesocket(accepted);
 			else
 			{
-				setsockopt(accepted, IPPROTO_TCP, TCP_NODELAY,
+			setsockopt(accepted,
+				remote_transport_bluetooth ? SOL_SOCKET : IPPROTO_TCP,
+				remote_transport_bluetooth ? SO_KEEPALIVE : TCP_NODELAY,
 					(const char *)&no_delay, sizeof(no_delay));
 				client_socket = accepted;
 				packet_buffer_size = 0;
@@ -334,12 +355,72 @@ void remote_input_set_enabled(int enabled)
 		stop_listener();
 		return;
 	}
-	if (listener_socket != INVALID_SOCKET)
+	if (listener_socket != INVALID_SOCKET || bluetooth_listener_socket != INVALID_SOCKET)
 		return;
 
 	if (WSAStartup(MAKEWORD(2, 2), &data) != 0)
 		return;
 	winsock_started = 1;
+	if (remote_transport_bluetooth)
+	{
+		SOCKET bluetooth_socket = socket(AF_BTH, SOCK_STREAM, BTHPROTO_RFCOMM);
+		SOCKADDR_BTH bluetooth_address;
+		if (bluetooth_socket == INVALID_SOCKET || !make_nonblocking(bluetooth_socket))
+		{
+			if (bluetooth_socket != INVALID_SOCKET)
+				closesocket(bluetooth_socket);
+			stop_listener();
+			return;
+		}
+		memset(&bluetooth_address, 0, sizeof(bluetooth_address));
+		bluetooth_address.addressFamily = AF_BTH;
+		bluetooth_address.serviceClassId = SerialPortServiceClass_UUID;
+		bluetooth_address.port = BT_PORT_ANY;
+		if (bind(bluetooth_socket, (struct sockaddr *)&bluetooth_address,
+			(int)sizeof(bluetooth_address)) == SOCKET_ERROR || listen(bluetooth_socket, 1) == SOCKET_ERROR)
+		{
+			closesocket(bluetooth_socket);
+			stop_listener();
+			return;
+		}
+		{
+			int address_size = sizeof(bluetooth_address);
+			if (getsockname(bluetooth_socket, (struct sockaddr *)&bluetooth_address,
+				&address_size) == SOCKET_ERROR)
+			{
+				closesocket(bluetooth_socket);
+				stop_listener();
+				return;
+			}
+		}
+		memset(&bluetooth_service, 0, sizeof(bluetooth_service));
+		memset(&bluetooth_service_address, 0, sizeof(bluetooth_service_address));
+		memset(&bluetooth_service_sockaddr, 0, sizeof(bluetooth_service_sockaddr));
+		bluetooth_service_sockaddr.addressFamily = AF_BTH;
+		bluetooth_service_sockaddr.serviceClassId = SerialPortServiceClass_UUID;
+		bluetooth_service_sockaddr.port = bluetooth_address.port;
+		bluetooth_service.dwSize = sizeof(bluetooth_service);
+		bluetooth_service.lpszServiceInstanceName = bluetooth_service_name;
+		bluetooth_service.lpServiceClassId = (LPGUID)&SerialPortServiceClass_UUID;
+		bluetooth_service.dwNameSpace = NS_BTH;
+		bluetooth_service.dwNumberOfCsAddrs = 1;
+		bluetooth_service_address.iSocketType = SOCK_STREAM;
+		bluetooth_service_address.iProtocol = BTHPROTO_RFCOMM;
+		bluetooth_service_address.LocalAddr.lpSockaddr = (struct sockaddr *)&bluetooth_service_sockaddr;
+		bluetooth_service_address.LocalAddr.iSockaddrLength = sizeof(bluetooth_service_sockaddr);
+		bluetooth_service_address.RemoteAddr.lpSockaddr = NULL;
+		bluetooth_service_address.RemoteAddr.iSockaddrLength = 0;
+		bluetooth_service.lpcsaBuffer = &bluetooth_service_address;
+		if (WSASetServiceW(&bluetooth_service, RNRSERVICE_REGISTER, 0) == SOCKET_ERROR)
+		{
+			closesocket(bluetooth_socket);
+			stop_listener();
+			return;
+		}
+		bluetooth_service_registered = 1;
+		bluetooth_listener_socket = bluetooth_socket;
+		return;
+	}
 	socket_handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (socket_handle == INVALID_SOCKET || !make_nonblocking(socket_handle))
 	{
@@ -364,6 +445,25 @@ void remote_input_set_enabled(int enabled)
 	listener_socket = socket_handle;
 }
 
+void remote_input_set_transport(const char *transport)
+{
+	int bluetooth = transport && strcmp(transport, "bluetooth") == 0;
+	if (bluetooth != remote_transport_bluetooth)
+	{
+		remote_transport_bluetooth = bluetooth;
+		if (remote_enabled)
+		{
+			stop_listener();
+			remote_input_set_enabled(1);
+		}
+	}
+}
+
+int remote_input_uses_bluetooth(void)
+{
+	return remote_transport_bluetooth;
+}
+
 void remote_input_poll(void)
 {
 	if (remote_enabled)
@@ -379,6 +479,8 @@ remote_input_state_t remote_input_get_state(void)
 
 static remote_input_state_t remote_state;
 void remote_input_set_enabled(int enabled) { (void)enabled; }
+void remote_input_set_transport(const char *transport) { (void)transport; }
+int remote_input_uses_bluetooth(void) { return 0; }
 void remote_input_set_pairing_code(const char *code) { (void)code; }
 void remote_input_set_overlay(const uint8_t *data, size_t data_size,
 	const char *mime_type)

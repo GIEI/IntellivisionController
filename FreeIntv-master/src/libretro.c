@@ -938,11 +938,18 @@ static void show_remote_controller_address(void)
 	struct retro_message_ext extended_message;
 	struct retro_message legacy_message;
 	remote_input_get_host_address(address, sizeof(address));
-	if (!address[0])
-		strcpy(address, "IP non disponibile");
-	snprintf(message, sizeof(message),
-		"Phone controller: PC %s:%d  |  ROM overlay %s", address,
-		REMOTE_INPUT_PORT, phone_overlay_available ? "found" : "not found");
+	if (remote_input_uses_bluetooth())
+		snprintf(message, sizeof(message),
+			"Phone controller: Bluetooth SPP/RFCOMM  |  ROM overlay %s",
+			phone_overlay_available ? "found" : "not found");
+	else
+	{
+		if (!address[0])
+			strcpy(address, "IP non disponibile");
+		snprintf(message, sizeof(message),
+			"Phone controller: PC %s:%d  |  ROM overlay %s", address,
+			REMOTE_INPUT_PORT, phone_overlay_available ? "found" : "not found");
+	}
 	if (Log)
 		Log(RETRO_LOG_INFO, "%s\n", message);
 	memset(&extended_message, 0, sizeof(extended_message));
@@ -1359,9 +1366,10 @@ static void check_variables(bool first_run)
 	var.value = NULL;
 	if (Environ(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
 	{
-		int enabled = strcmp(var.value, "enabled") == 0;
+		int enabled = strcmp(var.value, "disabled") != 0;
 		if (!first_run && enabled != remote_input_enabled)
 			remote_input_set_enabled(enabled);
+		remote_input_set_transport(var.value);
 		remote_input_enabled = enabled;
 	}
 	var.key = "freeintv_remote_code";

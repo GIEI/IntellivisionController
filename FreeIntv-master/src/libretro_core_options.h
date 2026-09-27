@@ -94,13 +94,14 @@ struct retro_core_option_v2_definition option_defs_us[] = {
    },
    {
       "freeintv_remote_input",
-      "Phone Controller over Wi-Fi (Restart)",
+      "Phone Controller Connection (Restart)",
       NULL,
-      "Accept a phone controller on the local network at TCP port 55355. When a game loads, RetroArch shows this PC's local IP in an on-screen notification and log. Connect the phone to the same network, enter that IP in the app, and do not expose this port to the internet.",
+      "Choose one phone-controller transport. Wi-Fi uses TCP port 55355 and requires the phone and PC on the same network. Bluetooth uses Bluetooth Classic (SPP/RFCOMM); pair the PC and phone in their Bluetooth settings first. Restart the core after changing this option.",
       NULL,
       "input",
       {
-         { "enabled", "Enabled" },
+         { "wifi", "Wi-Fi" },
+         { "bluetooth", "Bluetooth" },
          { "disabled", "Disabled" },
          { NULL, NULL },
       },
@@ -110,7 +111,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "freeintv_remote_code",
       "Phone Controller Pairing Code",
       NULL,
-      "Set the same numeric pairing code in the phone app. Use at least 6 digits. The network input listener accepts one paired phone.",
+      "Set the same numeric pairing code in the phone app. Use at least 6 digits. The phone-controller listener accepts one connected phone.",
       NULL,
       "input",
       {

@@ -1,2 +1,3 @@
 # Flutter SDK/Gradle state isolated for this workspace's build commands.
 .codex-local/
+Cache/

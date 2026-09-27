@@ -55,6 +55,15 @@ class _ControllerScreenState extends State<ControllerScreen> {
   final Map<int, int> _controlTouches = {};
   late final Timer _heartbeat;
   Socket? _socket;
+  static const _native = MethodChannel('intellivision_controller/preferences');
+  static const _bluetoothEvents = EventChannel(
+    'intellivision_controller/bluetooth_events',
+  );
+  StreamSubscription<dynamic>? _bluetoothSubscription;
+  String _transport = 'wifi';
+  List<Map<String, String>> _pairedDevices = [];
+  String? _selectedBluetoothAddress;
+  bool _bluetoothConnected = false;
   bool _connecting = false;
   String _connectionMessage = 'In attesa del core sul PC';
   int _buttonBits = 0;
@@ -76,10 +85,20 @@ class _ControllerScreenState extends State<ControllerScreen> {
   void initState() {
     super.initState();
     _hostController.addListener(_onHostChanged);
+    _bluetoothSubscription = _bluetoothEvents.receiveBroadcastStream().listen((
+      data,
+    ) {
+      if (_transport == 'bluetooth' &&
+          _bluetoothConnected &&
+          data is Uint8List) {
+        _receiveOverlayData(data, null);
+      }
+    }, onError: (_) => _bluetoothConnectionEnded());
     _loadConnectionSettings();
     _heartbeat = Timer.periodic(const Duration(milliseconds: 20), (_) {
       _sendState();
-      if (_socket == null &&
+      if (_transport == 'wifi' &&
+          _socket == null &&
           !_connecting &&
           _hostController.text.trim().isNotEmpty) {
         _connect();
@@ -98,14 +117,24 @@ class _ControllerScreenState extends State<ControllerScreen> {
       if (!mounted || values == null) return;
       _hostController.text = values['host'] ?? '';
       _codeController.text = values['code'] ?? _pairingCodeDefault;
-      if (_hostController.text.trim().isNotEmpty) _connect();
+      _transport = values['transport'] ?? 'wifi';
+      if (_transport == 'bluetooth') {
+        _loadPairedDevices();
+      } else if (_hostController.text.trim().isNotEmpty) {
+        _connect();
+      }
     } on PlatformException {
       // Settings can be entered manually if persistence is unavailable.
     }
   }
 
   Future<void> _connect() async {
-    if (_connecting || !mounted || _hostController.text.trim().isEmpty) return;
+    if (_transport != 'wifi' ||
+        _connecting ||
+        !mounted ||
+        _hostController.text.trim().isEmpty) {
+      return;
+    }
     _connecting = true;
     if (mounted) setState(() => _connectionMessage = 'Connessione al PC…');
     try {
@@ -148,13 +177,12 @@ class _ControllerScreenState extends State<ControllerScreen> {
   }
 
   void _connectToHost() {
-    _socket?.destroy();
-    _socket = null;
-    const channel = MethodChannel('intellivision_controller/preferences');
-    channel
+    _disconnectCurrent();
+    _native
         .invokeMethod<void>('setAll', <String, String>{
           'host': _hostController.text.trim(),
           'code': _codeController.text.trim(),
+          'transport': _transport,
         })
         .catchError((Object _) {});
     _connect();
@@ -174,8 +202,15 @@ class _ControllerScreenState extends State<ControllerScreen> {
     }
   }
 
-  void _receiveOverlay(Socket socket, Uint8List data) {
-    if (!identical(_socket, socket)) return;
+  void _receiveOverlay(Socket socket, Uint8List data) =>
+      _receiveOverlayData(data, socket);
+
+  void _receiveOverlayData(Uint8List data, Socket? socket) {
+    if (socket != null && !identical(_socket, socket)) return;
+    if (socket == null && (!_bluetoothConnected || _transport != 'bluetooth'))
+    {
+      return;
+    }
     _incomingBytes.addAll(data);
     if (_incomingBytes.length < 10) return;
     final packet = Uint8List.fromList(_incomingBytes);
@@ -183,16 +218,14 @@ class _ControllerScreenState extends State<ControllerScreen> {
         packet[1] != 0x49 ||
         packet[2] != 0x4F ||
         packet[3] != 0x31) {
-      socket.destroy();
-      _connectionEnded(socket);
+      _dropActiveConnection(socket);
       return;
     }
     final header = ByteData.sublistView(packet);
     final imageLength = header.getUint32(4, Endian.little);
     final mimeLength = header.getUint16(8, Endian.little);
     if (imageLength > _overlayMaxBytes || mimeLength > 32) {
-      socket.destroy();
-      _connectionEnded(socket);
+      _dropActiveConnection(socket);
       return;
     }
     final contentStart = 10 + mimeLength;
@@ -217,7 +250,7 @@ class _ControllerScreenState extends State<ControllerScreen> {
     if (image != null) unawaited(_readOverlaySize(socket, image));
   }
 
-  Future<void> _readOverlaySize(Socket socket, Uint8List bytes) async {
+  Future<void> _readOverlaySize(Socket? socket, Uint8List bytes) async {
     ui.Codec? codec;
     try {
       codec = await ui.instantiateImageCodec(bytes);
@@ -228,13 +261,13 @@ class _ControllerScreenState extends State<ControllerScreen> {
       );
       frame.image.dispose();
       if (mounted &&
-          identical(_socket, socket) &&
+          (socket == null ? _bluetoothConnected : identical(_socket, socket)) &&
           identical(_overlayImage, bytes)) {
         setState(() => _overlayImageSize = size);
       }
     } catch (_) {
       if (mounted &&
-          identical(_socket, socket) &&
+          (socket == null ? _bluetoothConnected : identical(_socket, socket)) &&
           identical(_overlayImage, bytes)) {
         setState(() {
           _overlayImage = null;
@@ -272,7 +305,7 @@ class _ControllerScreenState extends State<ControllerScreen> {
 
   void _sendState() {
     final socket = _socket;
-    if (socket == null) return;
+    if (socket == null && !_bluetoothConnected) return;
     final packet = Uint8List(16);
     packet.setRange(0, 4, const [0x46, 0x49, 0x56, 0x31]); // FIV1
     final data = ByteData.sublistView(packet);
@@ -281,10 +314,140 @@ class _ControllerScreenState extends State<ControllerScreen> {
     data.setInt16(12, _axisX, Endian.little);
     data.setInt16(14, _axisY, Endian.little);
     try {
-      socket.add(packet);
+      if (socket != null) {
+        socket.add(packet);
+      } else {
+        _native
+            .invokeMethod<void>('sendBluetooth', packet)
+            .catchError((Object _) {});
+      }
     } on SocketException {
-      _connectionEnded(socket);
+      if (socket != null) _connectionEnded(socket);
     }
+  }
+
+  bool get _connected => _socket != null || _bluetoothConnected;
+
+  Future<void> _loadPairedDevices() async {
+    try {
+      final result = await _native.invokeListMethod<dynamic>(
+        'getPairedDevices',
+      );
+      if (!mounted || result == null) return;
+      setState(() {
+        _pairedDevices = result
+            .map((item) => Map<String, String>.from(item as Map))
+            .toList();
+        if (!_pairedDevices.any(
+          (device) => device['address'] == _selectedBluetoothAddress,
+        )) {
+          _selectedBluetoothAddress = _pairedDevices.isEmpty
+              ? null
+              : _pairedDevices.first['address'];
+        }
+      });
+    } on PlatformException catch (error) {
+      if (mounted && error.code != 'permission_required') {
+        setState(
+          () => _connectionMessage =
+              'Bluetooth non disponibile: ${error.message ?? ''}',
+        );
+      }
+    }
+  }
+
+  Future<void> _connectBluetooth() async {
+    final address = _selectedBluetoothAddress;
+    if (_connecting || address == null || !mounted) return;
+    _connecting = true;
+    setState(() => _connectionMessage = 'Connessione Bluetooth…');
+    try {
+      await _native.invokeMethod<void>('connectBluetooth', <String, String>{
+        'address': address,
+        'code': _codeController.text.trim(),
+      });
+      if (!mounted) return;
+      _incomingBytes.clear();
+      _overlayImage = null;
+      _overlayVisible = false;
+      _overlayResponseReceived = false;
+      setState(() {
+        _bluetoothConnected = true;
+        Map<String, String>? device;
+        for (final candidate in _pairedDevices) {
+          if (candidate['address'] == address) device = candidate;
+        }
+        _connectionMessage = device == null
+            ? 'Collegato via Bluetooth'
+            : 'Collegato a ${device['name']}';
+      });
+      _sendState();
+    } on PlatformException catch (error) {
+      if (mounted && _transport == 'bluetooth') {
+        setState(
+          () => _connectionMessage =
+              'Bluetooth: ${error.message ?? 'connessione non riuscita'}',
+        );
+      }
+    } finally {
+      _connecting = false;
+    }
+  }
+
+  void _bluetoothConnectionEnded() {
+    if (!_bluetoothConnected) return;
+    _bluetoothConnected = false;
+    _incomingBytes.clear();
+    if (mounted) {
+      setState(() {
+        _connectionMessage = 'Connessione Bluetooth interrotta';
+        _overlayImage = null;
+        _overlayVisible = false;
+        _overlayResponseReceived = false;
+      });
+    }
+  }
+
+  void _dropActiveConnection(Socket? socket) {
+    if (socket != null) {
+      socket.destroy();
+      _connectionEnded(socket);
+    } else {
+      _native
+          .invokeMethod<void>('disconnectBluetooth')
+          .catchError((Object _) {});
+      _bluetoothConnectionEnded();
+    }
+  }
+
+  void _disconnectCurrent() {
+    _socket?.destroy();
+    _socket = null;
+    if (_bluetoothConnected) {
+      _native
+          .invokeMethod<void>('disconnectBluetooth')
+          .catchError((Object _) {});
+      _bluetoothConnected = false;
+    }
+  }
+
+  void _selectTransport(String? value) {
+    if (value == null || value == _transport) return;
+    _disconnectCurrent();
+    setState(() {
+      _transport = value;
+      _connectionMessage = value == 'wifi'
+          ? 'Inserisci l’IP del PC'
+          : 'Seleziona il PC associato';
+    });
+    _native
+        .invokeMethod<void>('setAll', <String, String>{
+          'host': _hostController.text.trim(),
+          'code': _codeController.text.trim(),
+          'transport': value,
+        })
+        .catchError((Object _) {});
+    if (value == 'bluetooth') _loadPairedDevices();
   }
 
   void _pressKey(int pointer, int index) {
@@ -335,13 +498,20 @@ class _ControllerScreenState extends State<ControllerScreen> {
   void dispose() {
     _heartbeat.cancel();
     final socket = _socket;
-    if (socket != null) {
+    if (socket != null || _bluetoothConnected) {
       _buttonBits = 0;
       _axisX = 0;
       _axisY = 0;
       _sendState();
-      socket.destroy();
+      socket?.destroy();
+      if (_bluetoothConnected) {
+        _native
+            .invokeMethod<void>('disconnectBluetooth')
+            .catchError((Object _) {});
+        _bluetoothConnected = false;
+      }
     }
+    _bluetoothSubscription?.cancel();
     _hostController.removeListener(_onHostChanged);
     _hostController.dispose();
     _codeController.dispose();
@@ -350,7 +520,7 @@ class _ControllerScreenState extends State<ControllerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final connected = _socket != null;
+    final connected = _connected;
     return Scaffold(
       body: SafeArea(
         child: Column(
@@ -362,6 +532,25 @@ class _ControllerScreenState extends State<ControllerScreen> {
                 onRetry: _connect,
               ),
             if (!connected)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 2, 18, 0),
+                child: DropdownButtonFormField<String>(
+                  initialValue: _transport,
+                  decoration: const InputDecoration(
+                    labelText: 'Connessione',
+                    isDense: true,
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: 'wifi', child: Text('Wi-Fi')),
+                    DropdownMenuItem(
+                      value: 'bluetooth',
+                      child: Text('Bluetooth'),
+                    ),
+                  ],
+                  onChanged: _selectTransport,
+                ),
+              ),
+            if (!connected && _transport == 'wifi')
               Padding(
                 padding: const EdgeInsets.fromLTRB(18, 8, 18, 8),
                 child: Row(
@@ -380,24 +569,67 @@ class _ControllerScreenState extends State<ControllerScreen> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    SizedBox(
-                      width: 112,
-                      child: TextField(
-                        controller: _codeController,
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(
-                          labelText: 'Codice',
-                          isDense: true,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
                     IconButton.filledTonal(
                       onPressed: _connectToHost,
                       icon: const Icon(Icons.link),
                       tooltip: 'Connetti',
                     ),
                   ],
+                ),
+              ),
+            if (!connected && _transport == 'bluetooth')
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 8, 18, 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        initialValue: _selectedBluetoothAddress,
+                        decoration: const InputDecoration(
+                          labelText: 'PC associato',
+                          isDense: true,
+                        ),
+                        items: _pairedDevices
+                            .map(
+                              (device) => DropdownMenuItem(
+                                value: device['address'],
+                                child: Text(
+                                  device['name'] ?? device['address'] ?? '',
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (value) =>
+                            setState(() => _selectedBluetoothAddress = value),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: _loadPairedDevices,
+                      icon: const Icon(Icons.refresh_rounded),
+                      tooltip: 'Aggiorna dispositivi',
+                    ),
+                    IconButton.filledTonal(
+                      onPressed: _connectBluetooth,
+                      icon: const Icon(Icons.link),
+                      tooltip: 'Connetti',
+                    ),
+                  ],
+                ),
+              ),
+            if (!connected)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 0, 18, 4),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: TextField(
+                    controller: _codeController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Codice',
+                      isDense: true,
+                    ),
+                  ),
                 ),
               ),
             Expanded(
@@ -424,7 +656,7 @@ class _ControllerScreenState extends State<ControllerScreen> {
                       ),
                     ),
             ),
-            if (!connected) const _UsbHelp(),
+            if (!connected) _UsbHelp(bluetooth: _transport == 'bluetooth'),
           ],
         ),
       ),
@@ -1040,13 +1272,17 @@ class _UtilityButton extends StatelessWidget {
 }
 
 class _UsbHelp extends StatelessWidget {
-  const _UsbHelp();
+  const _UsbHelp({required this.bluetooth});
+
+  final bool bluetooth;
 
   @override
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.fromLTRB(18, 4, 18, 10),
     child: Text(
-      'Collega PC e smartphone alla stessa rete Wi-Fi, poi inserisci l’IP del PC.',
+      bluetooth
+          ? 'Associa prima PC e smartphone nelle impostazioni Bluetooth, poi seleziona il PC qui sopra.'
+          : 'Collega PC e smartphone alla stessa rete Wi-Fi, poi inserisci l’IP del PC.',
       textAlign: TextAlign.center,
       style: TextStyle(
         color: Colors.white.withValues(alpha: .48),

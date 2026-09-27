@@ -26,4 +26,4 @@ firmware1_path = "grom.bin"
 firmware1_opt = "false"
 notes = "(!) exec.bin (md5): 62e761035cb657903761800f4437b8af|(!) grom.bin (md5): 0cd5946c6473e42e8e4c2137785e427f"
 
-description = "A libretro emulation core for the Mattel Intellivision with integrated Wi-Fi phone-controller support. ROM-specific PNG and JPG overlays are searched beside the ROM, then in system/freeintv_overlays, and can be transferred to the phone controller."
+description = "A libretro emulation core for the Mattel Intellivision with integrated Wi-Fi and Bluetooth Classic phone-controller support. ROM-specific PNG and JPG overlays are searched beside the ROM, then in system/freeintv_overlays, and can be transferred to the phone controller."

@@ -24,16 +24,27 @@ All three download links point to assets attached to the latest GitHub Release.
 2. Open the APK on the phone and follow Android's installation prompts. If prompted, allow the file manager or browser to install apps from this source.
 3. Open **Intellivision Controller**.
 
-The USB cable is only needed to copy the APK. The controller currently communicates with the core over Wi-Fi: connect the phone and PC to the same private Wi-Fi network. Direct USB controller communication and Bluetooth are not implemented.
+The USB cable is only needed to copy the APK. The app can communicate over Wi-Fi or Bluetooth Classic; no separate PC receiver application, ADB installation, or USB debugging setup is needed.
 
 ## Connect and play
 
-1. In RetroArch, open the running game's **Quick Menu → Core Options**. Enable **Phone Controller over Wi-Fi** and restart the core if RetroArch requests it. The listener is disabled by default.
-2. Load the game. The core displays the PC's local IP address in an on-screen message and in the RetroArch log.
-3. Enter that IP address in the Android app. Enter the same pairing code configured in the core options; the default is `482731`.
-4. Tap **Connect**. The app remembers the IP address and code. Use the keypad, directional disc, and action buttons to play.
+The phone controller is disabled by default. In RetroArch, open the game's **Quick Menu → Core Options → Phone Controller Connection**, select a transport, and restart the core when prompted. Wi-Fi and Bluetooth are alternatives; only one can be active at a time. Set **Phone Controller Pairing Code** to the same code used in the app (default: `482731`).
 
-If Windows Firewall asks, allow RetroArch on the private network. Both devices need to reach one another on local TCP port `55355`. Do not expose this port to the public internet.
+### Wi-Fi
+
+1. Connect the PC and phone to the same private network.
+2. Load the game and enter the PC's local IP address, shown by the core, in the app.
+3. Enter the pairing code and connect. If Windows Firewall asks, allow RetroArch on the private network.
+
+### Bluetooth
+
+1. Select **Bluetooth** for **Phone Controller Connection** in RetroArch and restart the core with a game loaded.
+2. Turn on Bluetooth and pair the PC and phone in Windows and Android Bluetooth settings. Keep the PC discoverable while pairing.
+3. In the app, select **Bluetooth**, refresh the paired-device list if needed, choose the PC, enter the pairing code, and connect. On Android 12 or later, allow the app's Bluetooth/Nearby Devices permission when asked.
+
+Bluetooth connects directly to the core using Bluetooth Classic SPP/RFCOMM. It does not require the devices to share a Wi-Fi network or an IP address. The app remembers the selected transport and connection details.
+
+Wi-Fi uses local TCP port `55355`; do not expose this port to the public internet. Bluetooth uses Bluetooth Classic SPP/RFCOMM after operating-system pairing. Only one transport can be active at a time.
 
 ## Game overlays
 
@@ -42,7 +53,7 @@ The controller works without a game overlay. When one is available, the core loo
 ## Troubleshooting
 
 - Confirm RetroArch loaded **FreeIntv Controller**, not another FreeIntv core.
-- Confirm both devices are on the same Wi-Fi network and the PC IP in the app is current.
+- For Wi-Fi, confirm both devices are on the same network and the PC IP in the app is current. For Bluetooth, confirm the core is set to Bluetooth, both systems show the devices as paired, Bluetooth is enabled, and the Android permission is granted. Refresh the app's paired-device list after pairing.
 - Check RetroArch's log for the core's phone-controller address and `[FreeIntv]` overlay messages.
 - Confirm `exec.bin` and `grom.bin` are in RetroArch's `system` directory.
 
