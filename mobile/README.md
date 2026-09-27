@@ -12,7 +12,7 @@ The host listener is Windows-only, accepts one phone, and releases all inputs af
 
 When the loaded ROM has a matching PNG or JPG, the core transfers it to the phone after pairing. The core checks the ROM's folder first, then `system/freeintv_overlays`. Tap **OVERLAY** to show or hide it above the 12 keypad buttons; the overlay layer does not block button touches. Image names must match the ROM basename, for example `Frog Bog.jpg` for `Frog Bog.bin`.
 
-The card retains its original aspect ratio and includes a header above the keypad for the game title. The square buttons and overlay touch regions share the same positions, calibrated to the printed first row on the classic BurgerTime card. PAUSE, SWAP, and OVERLAY sit in a toolbar outside the controller body. While connected, the complete controller scales to the available screen without scrolling. Cards with a different printed key layout may need separate alignment metadata in a future version.
+The controller body is widened to use more of the phone display, and the Mattel/Intellivision brand plate has been removed. ROM overlays retain their original aspect ratio; their printed title and keypad artwork remain aligned with the touch controls. PAUSE, SWAP, and OVERLAY sit in a toolbar outside the controller body. While connected, the complete controller scales to the available screen without scrolling. Cards with a different printed key layout may need separate alignment metadata in a future version.
 
 ## Packet reference
 

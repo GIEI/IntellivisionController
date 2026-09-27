@@ -207,8 +207,7 @@ class _ControllerScreenState extends State<ControllerScreen> {
 
   void _receiveOverlayData(Uint8List data, Socket? socket) {
     if (socket != null && !identical(_socket, socket)) return;
-    if (socket == null && (!_bluetoothConnected || _transport != 'bluetooth'))
-    {
+    if (socket == null && (!_bluetoothConnected || _transport != 'bluetooth')) {
       return;
     }
     _incomingBytes.addAll(data);
@@ -664,7 +663,7 @@ class _ControllerScreenState extends State<ControllerScreen> {
   }
 
   Widget _controllerWithToolbar() => SizedBox(
-    width: 370,
+    width: 430,
     child: Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -699,7 +698,7 @@ class _ControllerScreenState extends State<ControllerScreen> {
   );
 
   Widget _controllerFace() => Container(
-    width: 370,
+    width: 430,
     padding: const EdgeInsets.fromLTRB(16, 12, 16, 18),
     decoration: BoxDecoration(
       borderRadius: BorderRadius.circular(28),
@@ -754,7 +753,7 @@ class _ControllerScreenState extends State<ControllerScreen> {
         ),
         const SizedBox(height: 8),
         _Disc(
-          diameter: 280,
+          diameter: 310,
           axis: Offset(_axisX / 32767, _axisY / 32767),
           onChanged: _setDisc,
           onReleased: _resetDisc,
@@ -831,31 +830,8 @@ class _TopBar extends StatelessWidget {
   );
 }
 
-class _BrandPlate extends StatelessWidget {
-  const _BrandPlate();
-
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
-    decoration: BoxDecoration(
-      border: Border.all(color: const Color(0xFF615C54)),
-      borderRadius: BorderRadius.circular(8),
-      color: const Color(0xFF242424),
-    ),
-    child: const Text(
-      'MATTEL  •  INTELLIVISION',
-      style: TextStyle(
-        color: Color(0xFFE1D4BE),
-        fontSize: 11,
-        fontWeight: FontWeight.w700,
-        letterSpacing: 2.3,
-      ),
-    ),
-  );
-}
-
-/// The card header and the key grid share one coordinate system. Numbers on
-/// classic cards are near 37% of the image height; the header stays above them.
+/// The card artwork and key grid share one coordinate system. This keeps the
+/// transparent touch buttons aligned with the printed keys in game overlays.
 class ControllerKeypadPanel extends StatelessWidget {
   const ControllerKeypadPanel({
     super.key,
@@ -883,10 +859,10 @@ class ControllerKeypadPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const width = 300.0;
+    const width = 380.0;
     final height = (width * imageSize.height / imageSize.width).clamp(
-      360.0,
-      540.0,
+      456.0,
+      684.0,
     );
     final bounds = Rect.fromLTWH(0, 0, width, height);
     final fitted = applyBoxFit(BoxFit.contain, imageSize, bounds.size);
@@ -899,18 +875,11 @@ class ControllerKeypadPanel extends StatelessWidget {
       height: height,
       child: Stack(
         children: [
-          if (!showCard)
-            Positioned(
-              top: card.top + card.height * .075,
-              left: 0,
-              right: 0,
-              child: const Center(child: _BrandPlate()),
-            ),
           Positioned.fromRect(
-            rect: keypad.inflate(8),
+            rect: keypad.inflate(9.2),
             child: DecoratedBox(
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(18),
+                borderRadius: BorderRadius.circular(20.7),
                 color: const Color(0xFF131313),
                 border: Border.all(color: Colors.black),
               ),
@@ -1195,8 +1164,8 @@ class _RoundAction extends StatelessWidget {
     onPointerCancel: (event) => onUp(event.pointer),
     child: AnimatedContainer(
       duration: const Duration(milliseconds: 60),
-      width: 58,
-      height: 58,
+      width: 64,
+      height: 64,
       alignment: Alignment.center,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
@@ -1217,7 +1186,7 @@ class _RoundAction extends StatelessWidget {
       child: Text(
         label,
         style: const TextStyle(
-          fontSize: 8,
+          fontSize: 9,
           fontWeight: FontWeight.w900,
           letterSpacing: .3,
         ),
